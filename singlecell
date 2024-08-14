@@ -1,0 +1,389 @@
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+options(repr.plot.width=16, repr.plot.height=8)
+
+###########################################################################
+# Paper: PMID 27667667
+# Data link (available in paper):
+# https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-5061
+###########################################################################
+
+# From E-MTAB-5061.idf.txt
+# Format of the datafile ‘pancreas_refseq_rpkms_counts_3514sc.txt’: 
+# The file contains both the normalized rpkm values and the raw read counts 
+# for each sample. Columns correspond to samples and rows to genes. 
+# The first line of the file (starting with: #samples) contains the sample IDs 
+# to be used as column labels for both the rpkm and counts.
+# The columns of the rpkm and the counts have the same order with the sample IDs.
+# Columns 1:3514 correspond to rpkm values, Columns 3515:7028 correspond to read counts.
+# Rows 1:26179 correspond to data for RefSeq genes, Rows 26180:26271 correspond 
+# to data for the 92 external RNA spike-in controls (ERCCs), 
+# Row 26272 (last) contains data for ‘eGFP’.
+
+
+##"count"=gene expression counts (col=samples=cells & rows=genes)
+cell.barcodes <- scan(text = readLines("C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/E-MTAB-5061/pancreas_refseq_rpkms_counts_3514sc.txt", 1), 
+                      what = "", quiet = TRUE)[-1] # 3514 cell barcodes
+str(cell.barcodes)
+count=read.table('C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/E-MTAB-5061/pancreas_refseq_rpkms_counts_3514sc.txt',sep='\t')
+str(count)
+gene.meta=count[,1:2] # First two columns are gene symbols and IDs (meta data with gene descriptions)
+View(gene.meta)
+
+
+View(count)
+count=count[,-(1:2)] ##removes the first 2 columns
+str(count)
+count=as.matrix(count[,3515:7028]) # Columns 3515:7028 correspond to read counts.
+View(count)
+rownames(count)=gene.meta[,1]  ##assigns the values from the first column of gene.meta as the row names for the count data frame.
+colnames(count)=cell.barcodes
+View(count)
+rm(gene.meta, cell.barcodes)##deletes the gene.meta and cell.barcodes objects from the current R session, freeing up memory, because they are now the row and col names for "count" matrix
+str(count)
+View(count)
+dim(count)
+
+##"cell.meta"=meta data (description of data)
+
+cell.meta=read.csv('C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/E-MTAB-5061/E-MTAB-5061.sdrf.txt',sep='\t')
+dim(cell.meta)
+table(cell.meta$Characteristics..individual.) # Six healthy individuals, four T2D patients
+cell.meta=cell.meta[,1:5] # Remove unnecessary meta info for the cells
+head(cell.meta)
+View(cell.meta)
+str(cell.meta)
+
+#############Difference starts here!!!!
+####
+# cell.countcell.meta=cell.countcell.meta[1:1980,] #remove the T2D patients from cell.countcell.meta
+# View(cell.countcell.meta)
+
+healthy.cell.meta=cell.meta[1:1980,] #remove the T2D patients from cell.meta
+View(healthy.cell.meta)
+
+
+# Hint:
+# 1. Need to reorder the cells to make them match between count and cell.meta (reorders without T2D patients)
+      # Extract the new order of cell barcodes from cell.meta
+
+      new_order <- healthy.cell.meta[, 1]
+      
+      # Reorder the columns of the count matrix
+      count <- count[, new_order]
+      
+      # Verify the reordering
+      
+      head(count)
+      View(count)
+      str(count)
+      dim(count)
+      
+      
+###Remove duplicated genes (rows) 
+      # 
+      # duplicated_rows <- count[duplicated(rownames(count)), ]
+      # print(duplicated_rows)
+      # sum(duplicated_rows)
+      # rownames(count) <- make.unique(rownames(count))
+      # sum(duplicated_rows)
+      # dim(count)
+      
+      sum(duplicated(rownames(count))) #745 duplicated genes present
+      
+      sum(duplicated(colnames(count))) #no duplicated cell barcodes
+      
+      count=count[!duplicated(rownames(count)),]
+      
+      dim(count)
+      
+      
+      
+###Create Seurat Object
+      
+      seger_seurat_object <- CreateSeuratObject(counts = count, project = "seger_seurat_object", min.cells = 3, min.features = 200, meta.data = cell.meta)
+      seger_seurat_object
+###Quality Control (filters the low-quality cells,i.e. those with high mitochondrial counts)
+      
+      # The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+      seger_seurat_object[["percent.mt"]] <- PercentageFeatureSet(seger_seurat_object, pattern = "^MT-")
+      sum(PercentageFeatureSet(seger_seurat_object, pattern = "^MT-")) #no mitochondrial data
+      # Visualize QC metrics as a violin plot
+      VlnPlot(seger_seurat_object, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+      FeatureScatter(seger_seurat_object, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+      
+###Normalization
+      seger_seurat_object<-NormalizeData(seger_seurat_object,normalization.method="LogNormalize",scale.factor=10000)
+      View(seger_seurat_object)
+ 
+      ###Feature selection
+      
+      ##Tried the code below instead but doesn't work
+      # mca.seurat <- CreateSeuratObject(counts = Matrix::Matrix(as.matrix(count,sparse = T), project = "count")
+      
+      seger_seurat_object<-FindVariableFeatures(seger_seurat_object, selection.method = "vst",nfeatures = 2000)
+      View(seger_seurat_object)
+      
+      # Identify the 10 most highly variable genes
+      top10 <- head(VariableFeatures(seger_seurat_object), 10)
+      print(top10)
+      
+      # plot variable features with and without labels
+      plot1 <- VariableFeaturePlot(seger_seurat_object)
+      plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE,max.overlaps = 20)
+      plot1 + plot2
+           
+###Scale Data
+      seger_seurat_object <- ScaleData(seger_seurat_object, features = rownames(seger_seurat_object))
+      
+##PCA Analysis
+      seger_seurat_object <- RunPCA(seger_seurat_object, features = VariableFeatures(object = seger_seurat_object))
+      print(seger_seurat_object[['pca']], dims = 1:2, nfeatures = 2)
+###Visualize the PCA
+      VizDimLoadings(seger_seurat_object, dims = 1:2, reduction = "pca")
+      DimPlot(seger_seurat_object, reduction = "pca") + NoLegend()
+      DimHeatmap(seger_seurat_object, dims = 1, cells = 500, balanced = TRUE)
+      DimHeatmap(seger_seurat_object, dims = 1:15, cells = 500, balanced = TRUE)
+      ElbowPlot(seger_seurat_object)
+      
+###Cluster the cells
+      seger_seurat_object <- FindNeighbors(seger_seurat_object, dims = 1:20)
+      seger_seurat_object <- FindClusters(seger_seurat_object, resolution = 0.5)
+      # Look at cluster IDs of the first 5 cells
+      head(Idents(seger_seurat_object), 5)
+###UMAP & tSNE (non-linear dimensional reduction)
+      seger_seurat_object <- RunUMAP(seger_seurat_object, dims = 1:20)
+      # note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
+      DimPlot(seger_seurat_object, reduction = "umap",label = TRUE)
+      
+##############################  NOT WORKING !!!  ##########################################################################################################################################      
+      seger_seurat_object <- RunTSNE(seger_seurat_object, dims = 1:20)
+            p1=DimPlot(seger_seurat_object, reduction = "tsne", group.by = 'nFeature_RNA', label = TRUE)
+            p1
+#########################################################################################################################################################################################      
+  
+### find markers for every cluster compared to all remaining cells, report only the positive ones
+        seger.markers <- FindAllMarkers(seger_seurat_object, only.pos = TRUE)
+        seger.markers %>%
+          group_by(cluster) %>%
+          dplyr::filter(avg_log2FC > 1)
+        print(seger.markers)
+            
+        FeaturePlot(seger_seurat_object, features = c("C5orf38", "PAPPA2", "VSTM2L", "VGF", "FEV", "CALY", "IRX2", "SLC22A17", "TTR"))
+        
+        seger.markers %>%
+          group_by(cluster) %>%
+          dplyr::filter(avg_log2FC > 1) %>%
+          slice_head(n = 10) %>%
+          ungroup() -> top10
+        DoHeatmap(seger_seurat_object, features = top10$gene) + NoLegend()
+        
+        
+###HOW TO SAVE THE Seurat Object as rds file?????????????????????????????????????????????????????
+      # Assuming 'seurat_object' is your Seurat object with on-disk layers
+      SaveSeuratRds(count_seurat_object, file = "C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/midterm_kickstart.R")
+      loaded_object_count <- readRDS("count_seurat_object.rds")
+      
+      #saveRDS(count_seurat_object, file = "C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/midterm_kickstart.R/count_object.rds")
+      
+###########################################################################
+# Paper: PMID 27667667
+# Data link (available in paper):
+# https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-5061
+###########################################################################
+
+baron1=read.csv('C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/GSE84133_RAW/GSM2230757_human1_umifm_counts.csv.gz')
+baron2=read.csv('C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/GSE84133_RAW/GSM2230758_human2_umifm_counts.csv.gz')
+baron3=read.csv('C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/GSE84133_RAW/GSM2230759_human3_umifm_counts.csv.gz')
+baron4=read.csv('C:/Users/zafer/OneDrive/Desktop/AYSEGUL/Summer 2024 Stats Internship/GSE84133_RAW/GSM2230760_human4_umifm_counts.csv.gz')
+
+##NOT WORKING!!!!!!!!
+# head(baron1)
+# tail(baron1)
+##############################!!!!!!!!!!!!!!!!!!
+
+str(baron1)
+View(baron1)
+
+# Check that the columns are the same before combining rows
+all(colnames(baron1)==colnames(baron2))
+all(colnames(baron1)==colnames(baron3))
+all(colnames(baron1)==colnames(baron4))
+
+baron=rbind(baron1, baron2, baron3, baron4) #combines the rows of all baron1,2,3,4 into baron
+rm(baron1,baron2,baron3,baron4)#removes baron1,2,3,4 now that they are combined in baron
+head(baron)
+cell.meta.Baron=baron[,1:3] #meta data of baron is the first 3 columns
+colnames(cell.meta.Baron)[1]='cell' #for cell.meta col1=cell
+cell.meta.Baron$individual=substr(cell.meta.Baron$cell, start=1, stop=6) #labels the donors
+count.Baron=as.matrix(baron[,-(1:3)])
+View(count.Baron)
+rm(baron)
+rownames(count.Baron)=cell.meta.Baron$cell
+rownames(cell.meta.Baron)=cell.meta.Baron$cell
+colnames(cell.meta.Baron)[3]='celltype'
+
+dim(count.Baron)
+df2_count.Baron=as.data.frame(count.Baron)
+
+View(cell.meta.Baron)
+table(cell.meta.Baron$celltype)
+
+#check for duplicate cells either this way:
+duplicated_rows <- df2_count.Baron[duplicated(rownames(df2_count.Baron)), ]
+print(duplicated_rows)
+#or this way:
+sum(duplicated(rownames(df2_count.Baron)))
+
+rownames(df2_count.Baron) <- make.unique(rownames(df2_count.Baron))
+
+###Transpose the count.Baron matrix so that rows=genes(features) and columns=cells
+
+df2_count.Baron<-t(df2_count.Baron)
+
+View(df2_count.Baron)
+dim(df2_count.Baron)
+
+###Create Seurat Object
+
+baron_seurat_object <- CreateSeuratObject(counts = df2_count.Baron, project = "baron_seurat_object", min.cells = 3, min.features = 200, meta.data = cell.meta.Baron)
+
+baron_seurat_object
+
+
+######### Analysis #########
+# pre-process dataset (without integration)
+
+
+###Quality Control (filters the low-quality cells,i.e. those with high mitochondrial counts)
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+
+baron_seurat_object[["percent.mt"]] <- PercentageFeatureSet(baron_seurat_object, pattern = "^MT-")
+sum(PercentageFeatureSet(baron_seurat_object, pattern = "^MT-")) #output of zero means no mitochondrial data so all have equal mitochondria
+# Visualize QC metrics as a violin plot
+VlnPlot(baron_seurat_object, features = c("nFeature_RNA","nCount_RNA"), ncol = 2)
+        # # FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+        # # for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+        # 
+        plot1 <- FeatureScatter(baron_seurat_object, feature1 = "nCount_RNA", feature2 = "percent.mt")
+        plot2 <- FeatureScatter(baron_seurat_object, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+        plot1 + plot2
+        plot2
+        # 
+        baron_seurat_object <- subset(baron_seurat_object, subset = nFeature_RNA > 800 & nFeature_RNA < 3500)
+        # 
+        # 
+###Normalization
+  baron_seurat_object<-NormalizeData(baron_seurat_object,normalization.method="LogNormalize",scale.factor=10000)
+  baron_seurat_object
+
+###Feature selection (Highly Variable Features)
+  baron_seurat_object<-FindVariableFeatures(baron_seurat_object, selection.method = "vst",nfeatures = 2000)
+  
+  # Identify the 10 most highly variable genes
+  top10_2 <- head(VariableFeatures(baron_seurat_object), 10)
+  print(top10_2)
+  
+  # plot variable features with and without labels
+  plot1 <- VariableFeaturePlot(baron_seurat_object)
+  plot2 <- LabelPoints(plot = plot1, points = top10_2, repel = TRUE,max.overlaps = 20)
+  plot1 + plot2
+
+
+###Scale Data
+
+  baron_seurat_object <- ScaleData(baron_seurat_object, features = rownames(baron_seurat_object))
+
+
+###PCA Analysis
+  baron_seurat_object <- RunPCA(baron_seurat_object, features = VariableFeatures(object = baron_seurat_object))
+
+###Visualize the PCA
+
+  VizDimLoadings(baron_seurat_object, dims = 1:2, reduction = "pca")
+  
+  DimPlot(baron_seurat_object, reduction = "pca") + NoLegend()
+  
+  DimHeatmap(baron_seurat_object, dims = 1, cells = 500, balanced = TRUE)
+  
+  DimHeatmap(baron_seurat_object, dims = 1:15, cells = 500, balanced = TRUE)
+  
+  ElbowPlot(baron_seurat_object)
+  
+
+###Cluster the cells
+  baron_seurat_object <- FindNeighbors(baron_seurat_object, dims = 1:10)
+  baron_seurat_object <- FindClusters(baron_seurat_object, resolution = 0.5)
+
+# Look at cluster IDs of the first 5 cells
+  head(Idents(baron_seurat_object), 5)
+
+###UMAP & tSNE (non-linear dimensional reduction)
+  baron_seurat_object <- RunUMAP(baron_seurat_object, dims = 1:10)
+
+# note that you can set `label = TRUE` or use the LabelClusters function to help label individual clusters
+  DimPlot(baron_seurat_object, reduction = "umap",label = TRUE)
+
+#Group the clusters by cell type
+  DimPlot(baron_seurat_object, reduction = 'umap', group.by = 'celltype', label = TRUE)
+
+###Finding differentially expressed  features (cluster biomarkers): find markers for every cluster compared to all remaining cells, report only the positive ones
+  baron.markers <- FindAllMarkers(baron_seurat_object, only.pos = TRUE)
+  baron.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+  
+  baron.markers
+  
+  VlnPlot(baron_seurat_object, features = c("ADCYAP1", "PCSK1"))
+
+#feature plot
+FeaturePlot(baron_seurat_object, features = c("ADCYAP1", "PCSK1", "HADH", "IGF2", "ERO1B", "UCHL1", "IAPP", "MAFA","INS"))
+
+#baron.markers <- FindMarkers(pbmc, min.pct=0.25, logfc.threshold = 0.25, only.pos = TRUE)
+
+#Heat Map
+Idents(baron_seurat_object)=baron_seurat_object$celltype
+baron.markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(avg_log2FC > 1) %>%
+  slice_head(n = 10) %>%
+  ungroup() -> top10
+DoHeatmap(baron_seurat_object, features = top10$gene) + NoLegend()
+
+#------------OR--------------
+
+Idents(baron_seurat_object)=baron_seurat_object$celltype
+baron.markers <- FindAllMarkers(baron_seurat_object, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+baron.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(baron_seurat_object, features = top10$gene) + NoLegend()
+
+
+
+###Transfer cell type labels from (reference) Baron to (query) Seger
+
+# find anchors between reference and query
+  anchors <- FindTransferAnchors(
+    reference = baron_seurat_object,
+    query = seger_seurat_object,
+    dims = 1:10,
+    reference.reduction = "pca",
+    recompute.residuals = FALSE
+  )
+
+# project the query data onto the umap structure of the reference
+  seger_seurat_object <- MapQuery(
+    anchorset = anchors,
+    query = seger_seurat_object,
+    reference = baron_seurat_object,
+    refdata = list(celltype = "celltype"),
+    reference.reduction = "pca"
+  )
+  
+  p3=DimPlot(pbmc.3k, group.by='predicted.celltype.l1', label = TRUE)
+  p4=DimPlot(pbmc.3k, group.by='predicted.celltype.l2', label = TRUE)
+  p3 + p4
